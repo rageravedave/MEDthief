@@ -89,7 +89,12 @@ import contact_extractor
 _load_domain_cache()
 
 # python-jobspy benötigt Python 3.11 — wird als Subprocess aufgerufen
-PYTHON311 = "/usr/local/bin/python3.11"
+import shutil as _shutil, sys as _sys
+PYTHON311 = (
+    _shutil.which("python3.11")
+    or _shutil.which("python3")
+    or _sys.executable
+)
 
 
 def _extract_city(address: str) -> str:

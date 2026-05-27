@@ -4,9 +4,14 @@ Entwickelt für MEDWING GmbH
 """
 
 import streamlit as st
-import os, re, tempfile, urllib.parse, time
-from cv_parser import CVParser, FACHABTEILUNGEN
-from job_searcher import JobSearcher, compute_match_score, _is_relevant
+import os, re, tempfile, urllib.parse, time, traceback
+
+try:
+    from cv_parser import CVParser, FACHABTEILUNGEN
+    from job_searcher import JobSearcher, compute_match_score, _is_relevant
+except Exception as e:
+    st.error(f"Import-Fehler: {e}\n\n{traceback.format_exc()}")
+    st.stop()
 
 # ── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
