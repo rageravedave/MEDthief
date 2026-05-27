@@ -67,6 +67,24 @@ st.markdown("""
     section[data-testid="stSidebar"] {
         background-color: #131316;
     }
+    section[data-testid="stSidebar"] .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+    }
+    section[data-testid="stSidebar"] .stSelectbox,
+    section[data-testid="stSidebar"] .stTextInput,
+    section[data-testid="stSidebar"] .stMultiSelect,
+    section[data-testid="stSidebar"] .stSlider {
+        margin-bottom: 0.25rem;
+    }
+    section[data-testid="stSidebar"] label {
+        font-size: 12px !important;
+        color: #A1A1AA !important;
+        margin-bottom: 2px !important;
+    }
+    section[data-testid="stSidebar"] .stColumns {
+        gap: 0.5rem;
+    }
 
     /* Stats */
     .stat-box {
@@ -343,7 +361,20 @@ with st.sidebar:
 
     job_title = st.text_input("Berufsbezeichnung", value=cv.get("job_title", ""))
     wohnort = st.text_input("Wohnort / PLZ", value=cv.get("wohnort", ""))
-    einrichtung = st.text_input("Einrichtungsart", value=cv.get("einrichtung", ""))
+
+    EINRICHTUNGSARTEN = [
+        "",
+        "Krankenhaus / Klinik",
+        "Altenpflege / Pflegeheim",
+        "Ambulanter Pflegedienst",
+        "Intensivpflegedienst",
+        "Psychiatrie",
+        "Rehabilitation",
+        "Kinderklinik / Pädiatrie",
+    ]
+    _einr_default = cv.get("einrichtung", "")
+    _einr_idx = EINRICHTUNGSARTEN.index(_einr_default) if _einr_default in EINRICHTUNGSARTEN else 0
+    einrichtung = st.selectbox("Einrichtungsart", EINRICHTUNGSARTEN, index=_einr_idx)
 
     # Fachabteilungen als Multiselect
     default_depts = [d.strip() for d in cv.get("dept", "").split(",") if d.strip()]
@@ -364,15 +395,30 @@ with st.sidebar:
             ) if cv.get("arbeitszeit", "") in ["", "Vollzeit", "Teilzeit", "Vollzeit / Teilzeit"] else 0,
         )
     with col2:
+        _schicht_opts = ["", "Tagdienst", "Wechselschicht", "Dauernacht", "Früh- & Spätschicht"]
+        _schicht_default = cv.get("schicht", "")
         schicht = st.selectbox(
             "Schicht",
-            ["", "Tagdienst", "Wechselschicht", "Dauernacht", "Früh- & Spätschicht"],
-            index=0,
+            _schicht_opts,
+            index=_schicht_opts.index(_schicht_default) if _schicht_default in _schicht_opts else 0,
         )
 
     radius = st.slider("Umkreis (km)", 5, 100, 25, step=5)
 
     # ── Suchen-Button ────────────────────────────────────────────────────
+    # Sync candidate_info mit aktuellen Formularwerten
+    if cv:
+        st.session_state.candidate_info = {
+            "name": cv.get("name", ""),
+            "job_title": job_title,
+            "einrichtung": einrichtung,
+            "fachabteilungen": ", ".join(fachabteilungen) if fachabteilungen else cv.get("dept", ""),
+            "verfuegbar_ab": cv.get("verfuegbar_ab", ""),
+            "wohnort": wohnort,
+            "arbeitszeit": arbeitszeit,
+            "schichten": schicht,
+        }
+
     search_clicked = st.button("🔍  Stellen suchen", use_container_width=True, type="primary")
 
     # CV-Info anzeigen
@@ -395,6 +441,9 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── Suche ausführen ──────────────────────────────────────────────────────────
+if search_clicked and not job_title:
+    st.warning("Bitte Berufsbezeichnung eingeben.")
+
 if search_clicked and job_title:
     dept_str = ", ".join(fachabteilungen)
     progress_bar = st.progress(0, text="Suche startet ...")
@@ -569,8 +618,8 @@ if jobs:
                         )
                         st.link_button("📧 Akquise-Email", gmail_url, use_container_width=True)
 
-                    # Status
-                    status_key = f"status_{i}"
+                    # Status (stabil per Job-URL, nicht Index)
+                    status_key = f"status_{hash(url)}"
                     new_status = st.selectbox(
                         "Status", ["—", "Kontaktiert", "Interesse", "Abgelehnt", "Vermittelt"],
                         key=status_key, label_visibility="collapsed",
