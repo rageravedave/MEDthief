@@ -6,3 +6,4 @@ fpdf2>=2.7.0
 python-jobspy>=1.1.0
 openpyxl>=3.1.0
 Pillow>=10.0.0
+streamlit>=1.30.0
