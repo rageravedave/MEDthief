@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# macOS
+.DS_Store
+*.icns
+
+# IDE
+.vscode/
+.idea/
+
+# Env
+.env
+*.log
+
+# Domain cache (user-specific)
+.medthief_domain_cache.json
