@@ -728,6 +728,14 @@ def search_jobspy(job_title: str, location: str, radius: int,
                   user_lat, user_lon) -> List[Dict]:
     results: List[Dict] = []
     try:
+        # Prüfe ob python-jobspy überhaupt verfügbar ist
+        check = subprocess.run(
+            [PYTHON311, "-c", "import jobspy"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if check.returncode != 0:
+            return []  # jobspy nicht installiert → überspringen
+
         search_loc = f"{location}, Deutschland" if location else "Deutschland"
         proc = subprocess.run(
             [PYTHON311, "-c", _JOBSPY_SCRIPT, job_title, search_loc],

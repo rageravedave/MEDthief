@@ -406,8 +406,8 @@ if search_clicked and job_title:
                 job_title=job_title,
                 address=wohnort,
                 department=dept_str,
-                facility_type=einrichtung,
-                radius_km=radius,
+                einrichtung=einrichtung,
+                radius=radius,
                 arbeitszeit=arbeitszeit,
                 schicht=schicht,
             )
