@@ -496,13 +496,19 @@ if _do_search:
     _thread = threading.Thread(target=_worker, daemon=True)
     _thread.start()
 
-    _SOURCES = ["Pflegia", "Pflegejobs", "Medi-Karriere", "Kliniken.de", "Gesundheit.jobs"]
+    _STAGES = [
+        "Pflegia durchsuchen …",
+        "Pflegejobs durchsuchen …",
+        "Medi-Karriere durchsuchen …",
+        "Kliniken.de durchsuchen …",
+        "Kontaktdaten laden …",
+    ]
     _t0 = time.time()
     while not _state["done"]:
         _elapsed = time.time() - _t0
-        _pct = min(90, int(_elapsed / 25 * 90))
-        _src = _SOURCES[min(int(_elapsed / 5), len(_SOURCES) - 1)]
-        progress_bar.progress(_pct, text=f"🔍 {_src} ... ({int(_elapsed)}s)")
+        _pct = min(90, int(_elapsed / 18 * 90))
+        _stage = _STAGES[min(int(_elapsed / 4), len(_STAGES) - 1)]
+        progress_bar.progress(_pct, text=f"🔍 {_stage} ({int(_elapsed)}s)")
         time.sleep(0.4)
     _thread.join()
 
@@ -574,9 +580,11 @@ if jobs:
             from geopy.geocoders import Nominatim
             from geopy.extra.rate_limiter import RateLimiter
             clean = location_str.strip().rstrip(",").strip()
+            if "deutschland" not in clean.lower():
+                clean = clean + ", Deutschland"
             geolocator = Nominatim(user_agent="medthief_app_v2")
             geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
-            loc = geocode(clean + ", Deutschland", exactly_one=True, timeout=8)
+            loc = geocode(clean, exactly_one=True, timeout=8)
             return (loc.latitude, loc.longitude) if loc else None
         except Exception:
             return None

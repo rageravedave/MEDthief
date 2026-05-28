@@ -81,6 +81,7 @@ def _domain_cache_set(company: str, url: str) -> None:
 
 
 import requests
+from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
 
 import contact_extractor
@@ -217,6 +218,9 @@ def haversine(lat1, lon1, lat2, lon2) -> float:
 
 def _make_session() -> requests.Session:
     s = requests.Session()
+    adapter = HTTPAdapter(pool_connections=25, pool_maxsize=25)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
     s.headers.update({
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -291,7 +295,7 @@ TITLE_SEARCH_ALIASES: Dict[str, List[str]] = {
     "Pflegefachkraft": [
         "Pflegefachkraft", "Altenpfleger", "Gesundheits- und Krankenpfleger"],
     "Altenpfleger": [
-        "Altenpfleger", "Pflegefachkraft"],
+        "Altenpfleger", "Pflegefachkraft", "Gesundheits- und Krankenpfleger"],
     "Altenpfleger Fachweiterbildung": [
         "Altenpfleger Fachweiterbildung", "Pflegefachkraft Fachweiterbildung"],
     "Pflegefachkraft Fachweiterbildung": [
@@ -1179,7 +1183,7 @@ def _get_external_apply_url(job_url: str, session: requests.Session) -> str:
     """
     try:
         if "linkedin.com/jobs" in job_url:
-            r = session.get(job_url, timeout=10)
+            r = session.get(job_url, timeout=5)
             if not r.ok:
                 return ""
             # LinkedIn bettet applyUrl als JSON in die Seite ein (auch ohne Login)
@@ -1199,7 +1203,7 @@ def _get_external_apply_url(job_url: str, session: requests.Session) -> str:
             return ""
 
         if "indeed.com" in job_url:
-            r = session.get(job_url, timeout=10)
+            r = session.get(job_url, timeout=5)
             if not r.ok:
                 return ""
             soup = BeautifulSoup(r.text, "html.parser")
@@ -1212,7 +1216,7 @@ def _get_external_apply_url(job_url: str, session: requests.Session) -> str:
             return ""
 
         if "kliniken.de" in job_url:
-            r = session.get(job_url, timeout=10)
+            r = session.get(job_url, timeout=5)
             if not r.ok:
                 return job_url
             soup = BeautifulSoup(r.text, "html.parser")
@@ -1467,12 +1471,10 @@ def _parse_jsonld_org(data: dict, result: dict):
 
 def _scrape_company_contact_pages(domain: str, session: requests.Session) -> dict:
     """Crawlt bekannte Unterseiten der Firmen-Website nach Kontaktdaten."""
-    # Karriere/Kontakt-Seiten zuerst, Impressum zuletzt (hat GF statt AP)
-    # Prioritäts-Gruppen: Karriere-Seiten zuerst, dann Kontakt, dann Impressum
+    # Karriere/Kontakt-Seiten zuerst — Impressum weggelassen (langsam, liefert GF statt AP)
     priority_paths = [
         ["/karriere", "/jobs", "/stellenangebote", "/bewerbung", "/kontakt"],
         ["/ansprechpartner", "/team", "/ueber-uns/kontakt", "/ueber-uns", ""],
-        ["/impressum"],
     ]
     best: dict = {}
     all_emails: list = []
@@ -1480,7 +1482,7 @@ def _scrape_company_contact_pages(domain: str, session: requests.Session) -> dic
     def _fetch_and_parse(path):
         """Einzelne Seite abrufen und Kontaktdaten extrahieren."""
         try:
-            r = session.get(domain + path, timeout=5, allow_redirects=True)
+            r = session.get(domain + path, timeout=4, allow_redirects=True)
             if not r.ok:
                 return None
             html = r.text
@@ -1522,7 +1524,7 @@ def _scrape_company_contact_pages(domain: str, session: requests.Session) -> dic
             futs = {ex.submit(_fetch_and_parse, p): p for p in group}
             for fut in as_completed(futs):
                 try:
-                    result = fut.result(timeout=6)
+                    result = fut.result(timeout=5)
                     if not result:
                         continue
                     all_emails.extend(result.get("emails", []))
@@ -1906,7 +1908,7 @@ class JobSearcher:
                     domain = ""
                     job_url = job.get("url", "")
                     if job_url:
-                        r = self.session.get(job_url, timeout=10)
+                        r = self.session.get(job_url, timeout=5)
                         if r.ok:
                             nd = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>',
                                            r.text, re.DOTALL)
@@ -1930,10 +1932,10 @@ class JobSearcher:
                     return ckey, {}
 
             with ThreadPoolExecutor(max_workers=10) as ex:
-                futs = [ex.submit(_enrich_pflegia_company, j) for j in pflegia_dedup[:20]]
+                futs = [ex.submit(_enrich_pflegia_company, j) for j in pflegia_dedup[:10]]
                 for fut in as_completed(futs):
                     try:
-                        ckey, info = fut.result(timeout=30)
+                        ckey, info = fut.result(timeout=20)
                         if info:
                             company_contacts[ckey] = info
                     except Exception:
@@ -1966,7 +1968,7 @@ class JobSearcher:
         if need_contact:
             # Beste Matches zuerst enrichen
             need_contact.sort(key=lambda j: j.get("match_score", 0), reverse=True)
-            to_enrich = need_contact[:25]
+            to_enrich = need_contact[:15]
             _prog(f"Kontaktdaten für {len(to_enrich)} Stellen …")
 
             def _apply_contact(job, info):
@@ -1999,7 +2001,7 @@ class JobSearcher:
                     if not target:
                         target = url
 
-                    r = self.session.get(target, timeout=10)
+                    r = self.session.get(target, timeout=5)
                     if not r.ok:
                         return job
                     html = r.text
@@ -2022,19 +2024,6 @@ class JobSearcher:
                         all_emails.extend(info["all_emails"])
                     _apply_contact(job, info)
 
-                    # Falls Apply-URL != Original und noch kein Kontakt:
-                    # auch Original-Seite scrapen (z.B. kliniken.de hat manchmal Kontakt)
-                    if target != url and not (job.get("contact_email") or job.get("contact_phone")):
-                        r2 = self.session.get(url, timeout=8)
-                        if r2.ok:
-                            emails2 = _extract_mailto_emails(r2.text)
-                            all_emails.extend(emails2)
-                            text2 = BeautifulSoup(r2.text, "html.parser").get_text(" ")
-                            info2 = contact_extractor.extract(text2)
-                            if info2.get("all_emails"):
-                                all_emails.extend(info2["all_emails"])
-                            _apply_contact(job, info2)
-
                     # Beste Email aus allen gesammelten wählen
                     if not job.get("contact_email") and all_emails:
                         ranked = contact_extractor.rank_emails(list(dict.fromkeys(all_emails)))
@@ -2046,11 +2035,11 @@ class JobSearcher:
                 return job
 
             enriched_map = {id(j): j for j in unique}
-            with ThreadPoolExecutor(max_workers=12) as ex:
+            with ThreadPoolExecutor(max_workers=20) as ex:
                 futs = {ex.submit(_light_enrich, j): id(j) for j in to_enrich}
                 for fut in as_completed(futs):
                     try:
-                        enriched = fut.result(timeout=8)
+                        enriched = fut.result(timeout=15)
                         enriched_map[futs[fut]] = enriched
                     except Exception:
                         pass
