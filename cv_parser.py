@@ -252,9 +252,7 @@ FACILITY_RULES = [
 
 
 def normalize_facility(raw: str) -> str:
-    """Normalisiert Einrichtungsart auf Standard-Typ.
-    Wenn mehrere Typen passen (Kandidat ist flexibel), gib den spezifischsten zurück.
-    Wenn >= 4 verschiedene Typen matchen → Kandidat ist offen, kein Filter nötig."""
+    """Normalisiert Einrichtungsart(en) — gibt alle Matches als kommaseparierte Liste zurück."""
     if not raw:
         return ""
     raw_l = raw.lower()
@@ -262,12 +260,7 @@ def normalize_facility(raw: str) -> str:
     for keywords, normalized in FACILITY_RULES:
         if any(k in raw_l for k in keywords):
             matched.append(normalized)
-    if not matched:
-        return ""
-    # Kandidat gibt viele Typen an → offen für alles → keinen Filter setzen
-    if len(matched) >= 3:
-        return ""
-    return matched[0]
+    return ", ".join(matched) if matched else ""
 
 
 # ── Fachabteilung — alle relevanten Fächer ────────────────────────────────────
