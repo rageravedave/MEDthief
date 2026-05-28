@@ -666,18 +666,19 @@ if jobs:
 
         with st.container():
             # Kontaktdaten-HTML direkt in Karte
+            _pill = 'display:inline-block;padding:4px 12px;border-radius:16px;font-size:12px;margin:2px 4px;background:#131316;border:1px solid #3F3F46;color:#5EEAD4;text-decoration:none;'
             contact_html = ""
             if contact_name or contact_email or contact_phone:
                 parts = []
                 if contact_name:
-                    parts.append(f'<span class="contact-pill">👤 {contact_name}</span>')
+                    parts.append(f'<span style="{_pill}">👤 {contact_name}</span>')
                 if contact_phone:
-                    parts.append(f'<a href="tel:{contact_phone.replace(" ","")}" class="contact-pill">📞 {contact_phone}</a>')
+                    clean_phone = contact_phone.replace(" ", "")
+                    parts.append(f'<a href="tel:{clean_phone}" style="{_pill}">📞 {contact_phone}</a>')
                 if contact_email:
-                    is_guessed = job.get("contact_email_guessed", False)
-                    guess_mark = " ?" if is_guessed else ""
-                    parts.append(f'<a href="mailto:{contact_email}" class="contact-pill">✉ {contact_email}{guess_mark}</a>')
-                contact_html = '<div style="margin-top:8px;">' + " ".join(parts) + '</div>'
+                    guess_mark = " ?" if job.get("contact_email_guessed") else ""
+                    parts.append(f'<a href="mailto:{contact_email}" style="{_pill}">✉ {contact_email}{guess_mark}</a>')
+                contact_html = '<div style="margin-top:8px;">' + "".join(parts) + '</div>'
             else:
                 contact_html = '<div style="margin-top:8px;color:#52525B;font-size:11px;font-style:italic;">Keine Kontaktdaten gefunden</div>'
 
@@ -685,24 +686,23 @@ if jobs:
             if not job.get("facility_match", True) and job.get("detected_facility"):
                 facility_warn = f'<span style="color:#FCD34D;font-size:11px;margin-left:8px;">⚠ {job["detected_facility"]}</span>'
 
-            st.markdown(f"""
-            <div class="job-card">
-                <div style="display:flex;justify-content:space-between;align-items:start;">
-                    <div>
-                        <span class="source-tag">{source}</span>
-                        <span class="match-badge {badge_class}">{score}%</span>
-                        {f'<span style="color:#71717A;font-size:12px;">{dist_str}</span>' if dist_str else ''}
-                        {facility_warn}
-                    </div>
-                    <a href="{url}" target="_blank" style="color:#52525B;font-size:11px;text-decoration:none;">Stelle öffnen →</a>
-                </div>
-                <h3 style="color:#FAFAFA;margin:8px 0 2px 0;font-size:15px;">
-                    <a href="{url}" target="_blank" style="color:#99F6E4;text-decoration:none;">{title}</a>
-                </h3>
-                <p style="color:#D4D4D8;margin:0;font-size:13px;">🏢 {company} {f'· 📍 {location}' if location else ''}</p>
-                {contact_html}
-            </div>
-            """, unsafe_allow_html=True)
+            dist_label = f'<span style="color:#71717A;font-size:12px;">{dist_str}</span>' if dist_str else ''
+            loc_label = f'· 📍 {location}' if location else ''
+            card_html = (
+f'<div class="job-card">'
+f'<div style="display:flex;justify-content:space-between;align-items:start;">'
+f'<div><span class="source-tag">{source}</span>'
+f'<span class="match-badge {badge_class}">{score}%</span>'
+f'{dist_label}{facility_warn}</div>'
+f'<a href="{url}" target="_blank" style="color:#52525B;font-size:11px;text-decoration:none;">Stelle öffnen →</a>'
+f'</div>'
+f'<h3 style="color:#FAFAFA;margin:8px 0 2px 0;font-size:15px;">'
+f'<a href="{url}" target="_blank" style="color:#99F6E4;text-decoration:none;">{title}</a></h3>'
+f'<p style="color:#D4D4D8;margin:0;font-size:13px;">🏢 {company} {loc_label}</p>'
+f'{contact_html}'
+f'</div>'
+            )
+            st.markdown(card_html, unsafe_allow_html=True)
 
             # Aktions-Zeile unter der Karte
             act_cols = st.columns([1, 1, 1, 2])
