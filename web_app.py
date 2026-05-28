@@ -471,63 +471,65 @@ if _do_search:
         job_title = _cv_title
 
 if _do_search:
+    import threading
     dept_str = ", ".join(fachabteilungen)
     st.session_state.page = 0
 
-    SOURCES = ["Pflegia", "Pflegejobs", "Medi-Karriere", "Kliniken.de", "Gesundheit.jobs"]
-    with st.status("🔍 Stellen werden gesucht ...", expanded=True) as status:
-        for src in SOURCES:
-            st.write(f"⏳ {src} ...")
+    progress_bar = st.progress(0, text="⏳ Suche startet...")
+    status_text = st.empty()
+
+    _state = {"jobs": [], "error": None, "done": False}
+    _searcher = st.session_state.job_searcher
+
+    def _worker():
         try:
-            searcher = st.session_state.job_searcher
-            jobs = searcher.search(
-                job_title=job_title,
-                address=wohnort,
-                department=dept_str,
-                einrichtung=einrichtung,
-                radius=radius,
-                arbeitszeit=arbeitszeit,
-                schicht=schicht,
+            _state["jobs"] = _searcher.search(
+                job_title=job_title, address=wohnort, department=dept_str,
+                einrichtung=einrichtung, radius=radius,
+                arbeitszeit=arbeitszeit, schicht=schicht,
             )
-
-            # Post-Filter
-            if job_title:
-                jobs = [j for j in jobs if _is_relevant(j.get("title", ""), job_title)]
-
-            # Match-Scores berechnen
-            for job in jobs:
-                job["match_score"] = compute_match_score(
-                    job, job_title, einrichtung, radius
-                )
-
-            # Sortieren
-            _SOURCE_PRIO = {"pflegia": 0}
-            jobs = sorted(
-                jobs,
-                key=lambda j: (
-                    0 if j.get("facility_match", True) else 1,
-                    _SOURCE_PRIO.get(j.get("source", ""), 5),
-                    -(j.get("match_score") or 0),
-                    j.get("distance_km") or 9999,
-                ),
-            )
-
-            # Ergebnis-Zusammenfassung pro Quelle
-            src_counts = {}
-            for j in jobs:
-                s = j.get("source", "?")
-                src_counts[s] = src_counts.get(s, 0) + 1
-            for src, cnt in sorted(src_counts.items(), key=lambda x: -x[1]):
-                st.write(f"✅ {src}: **{cnt}** Stellen")
-
-            st.session_state.jobs = jobs
-            st.session_state.search_done = True
-            status.update(label=f"✅ {len(jobs)} Stellen gefunden!", state="complete", expanded=False)
-
         except Exception as e:
-            status.update(label=f"❌ Fehler: {e}", state="error")
-            import traceback
-            traceback.print_exc()
+            _state["error"] = e
+        finally:
+            _state["done"] = True
+
+    _thread = threading.Thread(target=_worker, daemon=True)
+    _thread.start()
+
+    _SOURCES = ["Pflegia", "Pflegejobs", "Medi-Karriere", "Kliniken.de", "Gesundheit.jobs"]
+    _t0 = time.time()
+    while not _state["done"]:
+        _elapsed = time.time() - _t0
+        _pct = min(90, int(_elapsed / 25 * 90))
+        _src = _SOURCES[min(int(_elapsed / 5), len(_SOURCES) - 1)]
+        progress_bar.progress(_pct, text=f"🔍 {_src} ... ({int(_elapsed)}s)")
+        time.sleep(0.4)
+    _thread.join()
+
+    if _state["error"]:
+        progress_bar.empty()
+        status_text.error(f"Suchfehler: {_state['error']}")
+    else:
+        jobs = _state["jobs"]
+        if job_title:
+            jobs = [j for j in jobs if _is_relevant(j.get("title", ""), job_title)]
+        for job in jobs:
+            job["match_score"] = compute_match_score(job, job_title, einrichtung, radius)
+        _SOURCE_PRIO = {"pflegia": 0}
+        jobs = sorted(jobs, key=lambda j: (
+            0 if j.get("facility_match", True) else 1,
+            _SOURCE_PRIO.get(j.get("source", ""), 5),
+            -(j.get("match_score") or 0),
+            j.get("distance_km") or 9999,
+        ))
+        src_counts = {}
+        for j in jobs:
+            src_counts[j.get("source", "?")] = src_counts.get(j.get("source", "?"), 0) + 1
+        summary = " · ".join(f"{s} {c}" for s, c in sorted(src_counts.items(), key=lambda x: -x[1]))
+        progress_bar.progress(100, text=f"✅ {len(jobs)} Stellen gefunden!")
+        status_text.caption(summary)
+        st.session_state.jobs = jobs
+        st.session_state.search_done = True
 
 elif not st.session_state.search_done and not st.session_state.auto_search:
     st.markdown("""
@@ -565,65 +567,63 @@ if jobs:
         else:
             st.metric("Ø Entfernung", "–")
 
-    # ── Karte ────────────────────────────────────────────────────────────
+    # ── Karte (lazy — nur laden wenn geöffnet) ────────────────────────────
     @st.cache_data(show_spinner=False, ttl=3600)
     def _geocode(location_str: str):
         try:
             from geopy.geocoders import Nominatim
             from geopy.extra.rate_limiter import RateLimiter
-            geolocator = Nominatim(user_agent="medthief_app")
+            clean = location_str.strip().rstrip(",").strip()
+            geolocator = Nominatim(user_agent="medthief_app_v2")
             geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
-            loc = geocode(location_str + ", Deutschland", exactly_one=True, timeout=5)
+            loc = geocode(clean + ", Deutschland", exactly_one=True, timeout=8)
             return (loc.latitude, loc.longitude) if loc else None
         except Exception:
             return None
 
-    user_coords = _geocode(wohnort) if wohnort else None
-    map_center = list(user_coords) if user_coords else [51.5, 10.0]
-    m = folium.Map(location=map_center, zoom_start=9 if user_coords else 6)
+    with st.expander("🗺 Stellenorte auf Karte anzeigen", expanded=False):
+        with st.spinner("Standorte werden geocodiert..."):
+            user_coords = _geocode(wohnort) if wohnort else None
+            map_center = list(user_coords) if user_coords else [51.5, 10.0]
+            m = folium.Map(location=map_center, zoom_start=9 if user_coords else 6)
 
-    if user_coords:
-        folium.Marker(
-            user_coords,
-            tooltip="Mein Standort",
-            icon=folium.Icon(color="red", icon="home"),
-        ).add_to(m)
+            if user_coords:
+                folium.Marker(
+                    user_coords,
+                    tooltip="📍 Mein Standort",
+                    icon=folium.Icon(color="red", icon="home", prefix="fa"),
+                ).add_to(m)
 
-    plotted = set()
-    _geo_limit = 0
-    for job in jobs:
-        loc_str = job.get("location", "")
-        if not loc_str or loc_str in plotted:
-            continue
-        if _geo_limit >= 20:
-            break
-        _geo_limit += 1
-        coords = _geocode(loc_str)
-        if coords:
-            score = job.get("match_score", 0)
-            color = "green" if score >= 70 else "orange" if score >= 40 else "gray"
-            popup_html = (
-                f"<b>{job.get('title','')}</b><br>"
-                f"{job.get('company','')}<br>"
-                f"{loc_str}<br>"
-                f"Match: {score}%"
-                + (f"<br>📞 {job.get('contact_phone','')}" if job.get("contact_phone") else "")
-                + (f"<br>✉ {job.get('contact_email','')}" if job.get("contact_email") else "")
-                + f'<br><a href="{job.get("url","#")}" target="_blank">Stelle öffnen →</a>'
-            )
-            folium.CircleMarker(
-                coords,
-                radius=7,
-                color=color,
-                fill=True,
-                fill_opacity=0.8,
-                tooltip=f"{job.get('company','')} · {score}%",
-                popup=folium.Popup(popup_html, max_width=250),
-            ).add_to(m)
-            plotted.add(loc_str)
+            plotted = set()
+            _geo_limit = 0
+            for job in jobs:
+                loc_str = job.get("location", "")
+                if not loc_str or loc_str in plotted:
+                    continue
+                if _geo_limit >= 15:
+                    break
+                _geo_limit += 1
+                coords = _geocode(loc_str)
+                if coords:
+                    score = job.get("match_score", 0)
+                    color = "green" if score >= 70 else "orange" if score >= 40 else "gray"
+                    popup_html = (
+                        f"<b>{job.get('title','')}</b><br>{job.get('company','')}<br>"
+                        f"{loc_str}<br>Match: {score}%"
+                        + (f"<br>📞 {job.get('contact_phone','')}" if job.get("contact_phone") else "")
+                        + (f"<br>✉ {job.get('contact_email','')}" if job.get("contact_email") else "")
+                        + f'<br><a href="{job.get("url","#")}" target="_blank">Stelle öffnen →</a>'
+                    )
+                    folium.CircleMarker(
+                        coords, radius=7, color=color, fill=True, fill_opacity=0.8,
+                        tooltip=f"{job.get('company','')} · {score}%",
+                        popup=folium.Popup(popup_html, max_width=250),
+                    ).add_to(m)
+                    plotted.add(loc_str)
 
-    st_folium(m, height=380, use_container_width=True)
-    st.caption("🔴 Mein Standort  🟢 ≥70%  🟠 ≥40%  ⚫ <40%")
+        st_folium(m, height=400, use_container_width=True)
+        st.caption("🔴 Mein Standort  🟢 ≥70%  🟠 ≥40%  ⚫ <40%")
+
     st.markdown("---")
 
     # Source filter
