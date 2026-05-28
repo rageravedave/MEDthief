@@ -497,16 +497,17 @@ if _do_search:
     _thread.start()
 
     _STAGES = [
-        "Pflegia durchsuchen …",
-        "Pflegejobs durchsuchen …",
-        "Medi-Karriere durchsuchen …",
-        "Kliniken.de durchsuchen …",
+        "Pflegia & Bundesagentur …",
+        "Pflegejobs & Care-Jobs …",
+        "Medi-Karriere & Stellenanzeigen …",
+        "Kliniken.de & Jobs.de …",
+        "Hokify & Gesundheit.jobs …",
         "Kontaktdaten laden …",
     ]
     _t0 = time.time()
     while not _state["done"]:
         _elapsed = time.time() - _t0
-        _pct = min(90, int(_elapsed / 18 * 90))
+        _pct = min(90, int(_elapsed / 20 * 90))
         _stage = _STAGES[min(int(_elapsed / 4), len(_STAGES) - 1)]
         progress_bar.progress(_pct, text=f"🔍 {_stage} ({int(_elapsed)}s)")
         time.sleep(0.4)

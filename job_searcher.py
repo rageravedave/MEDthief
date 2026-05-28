@@ -314,8 +314,12 @@ TITLE_SEARCH_ALIASES: Dict[str, List[str]] = {
     "Fachkrankenpfleger Psychiatrie": [
         "Fachkrankenpfleger Psychiatrie", "Pflegefachkraft Psychiatrie"],
     "Intensivpfleger": [
-        "Intensivpfleger", "Pflegefachkraft Intensiv", "ICU Pflege",
-        "Intensivpflege", "Fachkrankenpfleger Intensiv",
+        "Pflegefachkraft Intensivpflege",      # häufigster Jobtitel auf deutschen Jobbörsen
+        "Intensivpflege",                       # breite Suche, trifft fast alles
+        "Intensivpflegedienst",                 # sucht nach Dienstleistern
+        "Pflegefachkraft Beatmung",             # Spezialisierung Beatmungspflege
+        "Intensivpfleger",                      # spezifischer Titel
+        "Fachkrankenpfleger Intensiv",
         "Gesundheits- und Krankenpfleger Intensiv"],
     # ── Pflegehilfe ──────────────────────────────────────────────────────────
     "Pflegehelfer": [
@@ -540,7 +544,8 @@ CARE_SYNONYMS = [
      "krankenpfleger", "altenpfleger", "gesundheits- und krankenpfleger",
      "pflegehelfer", "pflegeassistent", "heilerziehungspfleger",
      "kinderkrankenpfleger", "kinderkrankenschwester", "fachkrankenpfleger",
-     "examiniert"},
+     "examiniert", "intensivpflege", "intensivpfleger", "beatmungspflege",
+     "außerklinisch", "intensivpflegedienst"},
     {"ota", "operationstechnisch"},
     {"ata", "anästhesietechnisch"},
     {"arzt", "ärztin", "oberarzt", "assistenzarzt", "facharzt", "chefarzt"},
@@ -822,30 +827,34 @@ def search_pflegia(job_title: str, location: str, radius: int,
         matching: List[tuple] = []  # (url, uuid)
 
         def _scan_sitemap(i: int) -> List[tuple]:
-            """Scannt eine einzelne Sitemap und gibt passende (url, uuid) zurück."""
-            hits = []
+            """Scannt eine einzelne Sitemap.
+            Gibt (url, uuid, is_local) zurück — lokale Jobs zuerst, dann Umkreis."""
+            local_hits = []
+            other_hits = []
             try:
                 r = session.get(PFLEGIA_SM.format(i=i), timeout=6)
                 if not r.ok:
                     return []
                 for url in re.findall(r"<loc>([^<]+)</loc>", r.text):
-                    m = re.search(
-                        r"/job-details/([^/]+)/([^/]+)/([a-f0-9-]{36})/", url
-                    )
+                    # UUID kann an verschiedenen Positionen im Pfad stehen
+                    m = re.search(r"/job-details/([^/]+)/([^/]+)/(?:[^/]+/)*([a-f0-9-]{36})/", url)
                     if not m:
                         continue
                     url_city, url_slug, uuid = m.groups()
-                    if url_city != city:
-                        continue
                     if job_title and not _is_relevant(
                         url_slug.replace("-", " "), job_title
                     ):
                         continue
-                    hits.append((url, uuid))
+                    if url_city == city:
+                        local_hits.append((url, uuid))
+                    else:
+                        other_hits.append((url, uuid))
             except Exception:
                 pass
-            return hits
+            # Lokale Treffer immer zurückgeben; andere nur wenn wenig lokale
+            return local_hits + (other_hits[:3] if len(local_hits) < 3 else [])
 
+        _pflegia_cap = 20  # mehr Treffer für spezialisierte Suchen
         with ThreadPoolExecutor(max_workers=10) as ex:
             futs = [ex.submit(_scan_sitemap, i) for i in range(PFLEGIA_SM_COUNT)]
             for fut in as_completed(futs):
@@ -856,7 +865,7 @@ def search_pflegia(job_title: str, location: str, radius: int,
                             matching.append((url, uuid))
                 except Exception:
                     pass
-                if len(matching) >= 15:
+                if len(matching) >= _pflegia_cap:
                     break
 
         if not matching:
@@ -949,9 +958,8 @@ def search_pflegia(job_title: str, location: str, radius: int,
             except Exception:
                 return None
 
-        # Höherer Parallelisierungsgrad: 12 Worker statt 6, bis zu 15 Details
         with ThreadPoolExecutor(max_workers=12) as ex:
-            futs = [ex.submit(_fetch_detail, item) for item in matching[:15]]
+            futs = [ex.submit(_fetch_detail, item) for item in matching[:_pflegia_cap]]
             for fut in as_completed(futs):
                 try:
                     job = fut.result(timeout=10)
@@ -1172,8 +1180,285 @@ def search_gesundheitjobs(job_title: str, location: str, radius: int,
 
 
 # ===========================================================================
-# Kontakt-Anreicherung — externe Apply-URL folgen + Kontakt extrahieren
+# Bundesagentur für Arbeit — offizielle REST-API (kein Scraping nötig)
 # ===========================================================================
+
+def search_arbeitsagentur(job_title: str, location: str, radius: int,
+                          session: requests.Session,
+                          user_lat=None, user_lon=None) -> List[Dict]:
+    """BA-Jobbörse REST-API — größtes deutsches Jobportal, keine Anti-Bot-Maßnahmen."""
+    results = []
+    try:
+        city = _extract_city(location)
+        for page in range(3):  # bis zu 75 Ergebnisse
+            r = session.get(
+                "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobs",
+                params={
+                    "was": job_title, "wo": city, "umkreis": radius,
+                    "page": page, "size": 25, "angebotsart": 1,
+                },
+                headers={"X-API-Key": "jobboerse-app"},
+                timeout=8,
+            )
+            if not r.ok:
+                break
+            data = r.json()
+            batch = data.get("stellenangebote", [])
+            if not batch:
+                break
+            for job in batch:
+                title = job.get("titel", "")
+                if not title or not _is_relevant(title, job_title):
+                    continue
+                ao  = job.get("arbeitsort") or {}
+                ort = ao.get("ort", "")
+                plz = ao.get("plz", "")
+                ref = job.get("refnr", "")
+                dist = _within_radius(ort, user_lat, user_lon, radius)
+                if user_lat and dist is not None and dist > radius:
+                    continue
+                results.append({
+                    "source":        "Bundesagentur",
+                    "title":         title,
+                    "company":       job.get("arbeitgeber", ""),
+                    "location":      f"{plz} {ort}".strip() if plz else ort,
+                    "distance_km":   dist,
+                    "url":           (f"https://www.arbeitsagentur.de/jobsuche/detail/{ref}"
+                                     if ref else ""),
+                    "published":     (job.get("aktuelleVeroeffentlichungsdatum") or "")[:10],
+                    "department":    "",
+                    "contact_name":  "",
+                    "contact_role":  "",
+                    "contact_email": "",
+                    "contact_phone": "",
+                })
+            if len(batch) < 25:
+                break
+    except Exception as e:
+        print(f"[Bundesagentur] {e}")
+    return results
+
+
+# ===========================================================================
+# stellenanzeigen.de Scraper
+# ===========================================================================
+
+def search_stellenanzeigen(job_title: str, location: str, radius: int,
+                           session: requests.Session,
+                           user_lat=None, user_lon=None) -> List[Dict]:
+    """Sucht auf stellenanzeigen.de (großes deutsches Jobportal, SSR)."""
+    results = []
+    try:
+        city = _extract_city(location)
+        r = session.get(
+            "https://www.stellenanzeigen.de/stellenangebote/",
+            params={"suchbegriff": job_title, "ort": city, "umkreis": radius},
+            timeout=7,
+        )
+        if not r.ok:
+            return []
+        soup = BeautifulSoup(r.text, "html.parser")
+        cards = (soup.select("article.job-ad-item")
+                 or soup.select("article[class*='job']")
+                 or soup.select("div[class*='job-ad']")
+                 or soup.select("li[class*='job']"))
+        for card in cards[:25]:
+            try:
+                h = card.find(["h2", "h3", "h4"])
+                title = h.get_text(strip=True) if h else ""
+                if not title or not _is_relevant(title, job_title):
+                    continue
+                comp_el = card.select_one("[class*='company'],[class*='arbeitgeber'],[class*='employer']")
+                company = comp_el.get_text(strip=True) if comp_el else ""
+                loc_el  = card.select_one("[class*='location'],[class*='city'],[class*='ort']")
+                job_loc = loc_el.get_text(strip=True) if loc_el else ""
+                a = card.find("a", href=True)
+                href = a["href"] if a else ""
+                job_url = href if href.startswith("http") else f"https://www.stellenanzeigen.de{href}"
+                dist = _within_radius(job_loc, user_lat, user_lon, radius)
+                if user_lat and dist is not None and dist > radius:
+                    continue
+                results.append({
+                    "source": "Stellenanzeigen",
+                    "title": title, "company": company,
+                    "location": job_loc or city, "distance_km": dist,
+                    "url": job_url, "published": "", "department": "",
+                    "contact_name": "", "contact_role": "",
+                    "contact_email": "", "contact_phone": "",
+                })
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"[Stellenanzeigen] {e}")
+    return results
+
+
+# ===========================================================================
+# care-jobs.de Scraper (Pflege-spezifisch)
+# ===========================================================================
+
+def search_carejobs(job_title: str, location: str, radius: int,
+                    session: requests.Session,
+                    user_lat=None, user_lon=None) -> List[Dict]:
+    """Sucht auf care-jobs.de (Pflege-Spezialportal, Seiten 1-3)."""
+    results = []
+    try:
+        city = _extract_city(location)
+        base_url = (f"https://www.care-jobs.de/jobsuche/"
+                    f"?q={requests.utils.quote(job_title)}"
+                    f"&wo={requests.utils.quote(city)}&r={radius}")
+        for page in range(1, 4):
+            url = base_url + (f"&page={page}" if page > 1 else "")
+            r = session.get(url, timeout=7)
+            if not r.ok:
+                break
+            soup = BeautifulSoup(r.text, "html.parser")
+            cards = (soup.select(".job-list-item")
+                     or soup.select("[class*='job-item']")
+                     or soup.select("[class*='job-card']")
+                     or soup.select("article"))
+            if not cards:
+                break
+            count_before = len(results)
+            for card in cards[:25]:
+                try:
+                    h = card.find(["h2", "h3", "h4"])
+                    title = h.get_text(strip=True) if h else ""
+                    if not title or not _is_relevant(title, job_title):
+                        continue
+                    comp_el = card.select_one("[class*='company'],[class*='arbeitgeber'],[class*='employer']")
+                    company = comp_el.get_text(strip=True) if comp_el else ""
+                    loc_el  = card.select_one("[class*='location'],[class*='city'],[class*='ort']")
+                    job_loc = loc_el.get_text(strip=True) if loc_el else ""
+                    a = card.find("a", href=True)
+                    href = a["href"] if a else ""
+                    job_url = href if href.startswith("http") else f"https://www.care-jobs.de{href}"
+                    dist = _within_radius(job_loc, user_lat, user_lon, radius)
+                    if user_lat and dist is not None and dist > radius:
+                        continue
+                    results.append({
+                        "source": "Care-Jobs",
+                        "title": title, "company": company,
+                        "location": job_loc or city, "distance_km": dist,
+                        "url": job_url, "published": "", "department": "",
+                        "contact_name": "", "contact_role": "",
+                        "contact_email": "", "contact_phone": "",
+                    })
+                except Exception:
+                    continue
+            if len(results) == count_before:
+                break
+    except Exception as e:
+        print(f"[CareJobs] {e}")
+    return results
+
+
+# ===========================================================================
+# hokify.de Scraper (DE/AT, oft ambulante Pflege)
+# ===========================================================================
+
+def search_hokify(job_title: str, location: str, radius: int,
+                  session: requests.Session,
+                  user_lat=None, user_lon=None) -> List[Dict]:
+    """Sucht auf hokify.de (deutschsprachiger Markt, SSR)."""
+    results = []
+    try:
+        city = _extract_city(location)
+        r = session.get(
+            "https://hokify.de/jobs",
+            params={"query": job_title, "location": city, "radius": radius},
+            timeout=7,
+        )
+        if not r.ok:
+            return []
+        soup = BeautifulSoup(r.text, "html.parser")
+        cards = (soup.select("[class*='job-card']")
+                 or soup.select("[class*='job-item']")
+                 or soup.select("[class*='jobcard']")
+                 or soup.select("article"))
+        for card in cards[:25]:
+            try:
+                h = card.find(["h2", "h3", "h4"])
+                title = h.get_text(strip=True) if h else ""
+                if not title or not _is_relevant(title, job_title):
+                    continue
+                comp_el = card.select_one("[class*='company'],[class*='employer'],[class*='arbeitgeber']")
+                company = comp_el.get_text(strip=True) if comp_el else ""
+                loc_el  = card.select_one("[class*='location'],[class*='city'],[class*='ort']")
+                job_loc = loc_el.get_text(strip=True) if loc_el else ""
+                a = card.find("a", href=True)
+                href = a["href"] if a else ""
+                job_url = href if href.startswith("http") else f"https://hokify.de{href}"
+                dist = _within_radius(job_loc, user_lat, user_lon, radius)
+                if user_lat and dist is not None and dist > radius:
+                    continue
+                results.append({
+                    "source": "Hokify",
+                    "title": title, "company": company,
+                    "location": job_loc or city, "distance_km": dist,
+                    "url": job_url, "published": "", "department": "",
+                    "contact_name": "", "contact_role": "",
+                    "contact_email": "", "contact_phone": "",
+                })
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"[Hokify] {e}")
+    return results
+
+
+# ===========================================================================
+# jobs.de Scraper
+# ===========================================================================
+
+def search_jobsde(job_title: str, location: str, radius: int,
+                  session: requests.Session,
+                  user_lat=None, user_lon=None) -> List[Dict]:
+    """Sucht auf jobs.de (großes deutsches Jobportal, SSR)."""
+    results = []
+    try:
+        city = _extract_city(location)
+        r = session.get(
+            "https://www.jobs.de/suche/",
+            params={"q": job_title, "l": city, "r": radius},
+            timeout=7,
+        )
+        if not r.ok:
+            return []
+        soup = BeautifulSoup(r.text, "html.parser")
+        cards = (soup.select("[class*='job-list-item']")
+                 or soup.select("[class*='job-item']")
+                 or soup.select("article.job")
+                 or soup.select("li[class*='job']"))
+        for card in cards[:25]:
+            try:
+                h = card.find(["h2", "h3", "h4"])
+                title = h.get_text(strip=True) if h else ""
+                if not title or not _is_relevant(title, job_title):
+                    continue
+                comp_el = card.select_one("[class*='company'],[class*='employer'],[class*='arbeitgeber']")
+                company = comp_el.get_text(strip=True) if comp_el else ""
+                loc_el  = card.select_one("[class*='location'],[class*='city'],[class*='ort']")
+                job_loc = loc_el.get_text(strip=True) if loc_el else ""
+                a = card.find("a", href=True)
+                href = a["href"] if a else ""
+                job_url = href if href.startswith("http") else f"https://www.jobs.de{href}"
+                dist = _within_radius(job_loc, user_lat, user_lon, radius)
+                if user_lat and dist is not None and dist > radius:
+                    continue
+                results.append({
+                    "source": "Jobs.de",
+                    "title": title, "company": company,
+                    "location": job_loc or city, "distance_km": dist,
+                    "url": job_url, "published": "", "department": "",
+                    "contact_name": "", "contact_role": "",
+                    "contact_email": "", "contact_phone": "",
+                })
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"[JobsDe] {e}")
+    return results
 
 def _get_external_apply_url(job_url: str, session: requests.Session) -> str:
     """
@@ -1714,11 +1999,9 @@ class JobSearcher:
             extra_terms.append(f"{title_aliases[0]} {dp}")
         if fac_mod == "Intensivpflege":
             extra_terms.extend([
-                "Intensivpflege außerklinisch",
-                "außerklinische Beatmung Pflege",
-                "Intensivpflegedienst",
-                "Pflegefachkraft Beatmung",
-                "1:1 Intensivpflege",
+                "ambulante Intensivpflege",      # verbreitete Formulierung auf Jobbörsen
+                "außerklinische Intensivpflege", # präziser Begriff für 1:1-Pflege
+                "Beatmungspflege",               # Beatmungs-fokussierte Dienste
             ])
 
         search_term = primary_terms[0]  # für Statusmeldungen
@@ -1727,14 +2010,19 @@ class JobSearcher:
             """Alle Quellen PARALLEL mit ThreadPoolExecutor abfragen."""
             found: List[Dict] = []
             tasks = [
-                (search_pflegia,        (term, loc, rad, self.session)),
-                (search_jobspy,         (term, loc, rad, user_lat, user_lon)),
-                (search_pflegejobs,     (term, loc, rad, self.session)),
-                (search_medikarriere,   (term, loc, rad, self.session, user_lat, user_lon)),
-                (search_kliniken,       (term, loc, rad, self.session, user_lat, user_lon)),
-                (search_gesundheitjobs, (term, loc, rad, self.session, user_lat, user_lon)),
+                (search_pflegia,          (term, loc, rad, self.session)),
+                (search_jobspy,           (term, loc, rad, user_lat, user_lon)),
+                (search_pflegejobs,       (term, loc, rad, self.session)),
+                (search_medikarriere,     (term, loc, rad, self.session, user_lat, user_lon)),
+                (search_kliniken,         (term, loc, rad, self.session, user_lat, user_lon)),
+                (search_gesundheitjobs,   (term, loc, rad, self.session, user_lat, user_lon)),
+                (search_arbeitsagentur,   (term, loc, rad, self.session, user_lat, user_lon)),
+                (search_stellenanzeigen,  (term, loc, rad, self.session, user_lat, user_lon)),
+                (search_carejobs,         (term, loc, rad, self.session, user_lat, user_lon)),
+                (search_hokify,           (term, loc, rad, self.session, user_lat, user_lon)),
+                (search_jobsde,           (term, loc, rad, self.session, user_lat, user_lon)),
             ]
-            with ThreadPoolExecutor(max_workers=6) as ex:
+            with ThreadPoolExecutor(max_workers=11) as ex:
                 futures = {ex.submit(fn, *args): fn.__name__ for fn, args in tasks}
                 for fut in as_completed(futures):
                     try:
@@ -1749,14 +2037,19 @@ class JobSearcher:
             all_tasks = []
             for term in terms:
                 all_tasks.extend([
-                    (search_pflegia,        (term, loc, rad, self.session)),
-                    (search_jobspy,         (term, loc, rad, user_lat, user_lon)),
-                    (search_pflegejobs,     (term, loc, rad, self.session)),
-                    (search_medikarriere,   (term, loc, rad, self.session, user_lat, user_lon)),
-                    (search_kliniken,       (term, loc, rad, self.session, user_lat, user_lon)),
-                    (search_gesundheitjobs, (term, loc, rad, self.session, user_lat, user_lon)),
+                    (search_pflegia,          (term, loc, rad, self.session)),
+                    (search_jobspy,           (term, loc, rad, user_lat, user_lon)),
+                    (search_pflegejobs,       (term, loc, rad, self.session)),
+                    (search_medikarriere,     (term, loc, rad, self.session, user_lat, user_lon)),
+                    (search_kliniken,         (term, loc, rad, self.session, user_lat, user_lon)),
+                    (search_gesundheitjobs,   (term, loc, rad, self.session, user_lat, user_lon)),
+                    (search_arbeitsagentur,   (term, loc, rad, self.session, user_lat, user_lon)),
+                    (search_stellenanzeigen,  (term, loc, rad, self.session, user_lat, user_lon)),
+                    (search_carejobs,         (term, loc, rad, self.session, user_lat, user_lon)),
+                    (search_hokify,           (term, loc, rad, self.session, user_lat, user_lon)),
+                    (search_jobsde,           (term, loc, rad, self.session, user_lat, user_lon)),
                 ])
-            with ThreadPoolExecutor(max_workers=16) as ex:
+            with ThreadPoolExecutor(max_workers=30) as ex:
                 futures = {ex.submit(fn, *args): fn.__name__ for fn, args in all_tasks}
                 for fut in as_completed(futures):
                     try:
@@ -1778,7 +2071,9 @@ class JobSearcher:
         # ── Schnellsuche: nur Haupt-Alias + max 2 Extra-Terme, ALLE parallel ──
         fast_terms = primary_terms[:1]  # nur erster Alias mit Fachabt.
         if extra_terms:
-            fast_terms.extend(extra_terms[:2])  # max 2 Extra-Terme
+            # Intensivpflege: 3 Extra-Terme, da Spezialbegriffe für gute Trefferquote nötig
+            n_extra = 3 if fac_mod == "Intensivpflege" else 2
+            fast_terms.extend(extra_terms[:n_extra])
         _prog(f"Suche: {search_term} in {location} ({radius} km) …")
         all_jobs.extend(_run_sources_fast(fast_terms, location, radius))
         unique = _dedup(all_jobs)
@@ -1960,7 +2255,7 @@ class JobSearcher:
 
         # ── Light-Enrichment für scrape-fähige Quellen ───────────────────────
         # Auch Jobs mit nur Name oder nur Telefon enrichen (fehlende Felder ergänzen)
-        _JS_SOURCES = {"pflegia", "indeed", "linkedin"}
+        _JS_SOURCES = {"pflegia", "indeed", "linkedin", "bundesagentur", "hokify"}
         need_contact = [j for j in unique
                         if not (j.get("contact_email") and j.get("contact_phone") and j.get("contact_name"))
                         and j.get("url")
