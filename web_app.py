@@ -591,7 +591,7 @@ if jobs:
                 folium.Marker(
                     user_coords,
                     tooltip="📍 Mein Standort",
-                    icon=folium.Icon(color="red", icon="home", prefix="fa"),
+                    icon=folium.Icon(color="red", icon="home"),
                 ).add_to(m)
 
             plotted = set()
@@ -614,10 +614,11 @@ if jobs:
                         + (f"<br>✉ {job.get('contact_email','')}" if job.get("contact_email") else "")
                         + f'<br><a href="{job.get("url","#")}" target="_blank">Stelle öffnen →</a>'
                     )
-                    folium.CircleMarker(
-                        coords, radius=7, color=color, fill=True, fill_opacity=0.8,
+                    folium.Marker(
+                        coords,
                         tooltip=f"{job.get('company','')} · {score}%",
                         popup=folium.Popup(popup_html, max_width=250),
+                        icon=folium.Icon(color=color, icon="briefcase"),
                     ).add_to(m)
                     plotted.add(loc_str)
 
