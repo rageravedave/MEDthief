@@ -5,9 +5,11 @@ Entwickelt für MEDWING GmbH
 
 import streamlit as st
 import os, re, tempfile, urllib.parse, time, traceback
+import folium
+from streamlit_folium import st_folium
 
 try:
-    from cv_parser import CVParser, FACHABTEILUNGEN
+    from cv_parser import CVParser, FACHABTEILUNGEN, MEDWING_ALL_TITLES
     from job_searcher import JobSearcher, compute_match_score, _is_relevant
 except Exception as e:
     st.error(f"Import-Fehler: {e}\n\n{traceback.format_exc()}")
@@ -132,7 +134,7 @@ def apply_cv(result: dict):
         return
 
     job_title   = _c(result.get("job_title", ""), 60)
-    einrichtung = _c(result.get("facility_type", ""), 40)
+    einrichtung = _c(result.get("facility_type", ""), 200)
     dept        = _c(result.get("fachabteilungen", ""), 50)
     raw_addr    = result.get("wohnort", "") or result.get("location", "")
     wohnort     = re.sub(r",?\s*Deutschland.*", "", raw_addr, flags=re.I).strip()
@@ -163,6 +165,7 @@ def apply_cv(result: dict):
     st.session_state.cv_result = {
         "job_title": job_title,
         "einrichtung": einrichtung,
+        "einrichtung_list": [e.strip() for e in einrichtung.split(",") if e.strip()],
         "dept": dept,
         "wohnort": wohnort,
         "arbeitszeit": arbeitszeit,
@@ -359,11 +362,14 @@ with st.sidebar:
 
     cv = st.session_state.cv_result or {}
 
-    job_title = st.text_input("Berufsbezeichnung", value=cv.get("job_title", ""))
+    _title_opts = [""] + MEDWING_ALL_TITLES
+    _title_default = cv.get("job_title", "")
+    _title_idx = _title_opts.index(_title_default) if _title_default in _title_opts else 0
+    job_title = st.selectbox("Berufsbezeichnung", _title_opts, index=_title_idx)
+
     wohnort = st.text_input("Wohnort / PLZ", value=cv.get("wohnort", ""))
 
     EINRICHTUNGSARTEN = [
-        "",
         "Krankenhaus / Klinik",
         "Altenpflege / Pflegeheim",
         "Ambulanter Pflegedienst",
@@ -372,9 +378,9 @@ with st.sidebar:
         "Rehabilitation",
         "Kinderklinik / Pädiatrie",
     ]
-    _einr_default = cv.get("einrichtung", "")
-    _einr_idx = EINRICHTUNGSARTEN.index(_einr_default) if _einr_default in EINRICHTUNGSARTEN else 0
-    einrichtung = st.selectbox("Einrichtungsart", EINRICHTUNGSARTEN, index=_einr_idx)
+    _einr_defaults = [e for e in cv.get("einrichtung_list", []) if e in EINRICHTUNGSARTEN]
+    einrichtung_list = st.multiselect("Einrichtungsart", EINRICHTUNGSARTEN, default=_einr_defaults)
+    einrichtung = ", ".join(einrichtung_list)
 
     # Fachabteilungen als Multiselect
     default_depts = [d.strip() for d in cv.get("dept", "").split(",") if d.strip()]
@@ -441,10 +447,10 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── Suche ausführen ──────────────────────────────────────────────────────────
-if search_clicked and not job_title:
-    st.warning("Bitte Berufsbezeichnung eingeben.")
+if search_clicked and not job_title.strip():
+    st.warning("Bitte Berufsbezeichnung auswählen.")
 
-if search_clicked and job_title:
+if search_clicked and job_title.strip():
     dept_str = ", ".join(fachabteilungen)
     progress_bar = st.progress(0, text="Suche startet ...")
 
@@ -528,6 +534,63 @@ if jobs:
         else:
             st.metric("Ø Entfernung", "–")
 
+    # ── Karte ────────────────────────────────────────────────────────────
+    @st.cache_data(show_spinner=False, ttl=3600)
+    def _geocode(location_str: str):
+        try:
+            from geopy.geocoders import Nominatim
+            from geopy.extra.rate_limiter import RateLimiter
+            geolocator = Nominatim(user_agent="medthief_app")
+            geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
+            loc = geocode(location_str + ", Deutschland", exactly_one=True, timeout=5)
+            return (loc.latitude, loc.longitude) if loc else None
+        except Exception:
+            return None
+
+    user_coords = _geocode(wohnort) if wohnort else None
+    map_center = list(user_coords) if user_coords else [51.5, 10.0]
+    m = folium.Map(location=map_center, zoom_start=9 if user_coords else 6)
+
+    if user_coords:
+        folium.Marker(
+            user_coords,
+            tooltip="Mein Standort",
+            icon=folium.Icon(color="red", icon="home"),
+        ).add_to(m)
+
+    plotted = set()
+    for job in jobs:
+        loc_str = job.get("location", "")
+        if not loc_str or loc_str in plotted:
+            continue
+        coords = _geocode(loc_str)
+        if coords:
+            score = job.get("match_score", 0)
+            color = "green" if score >= 70 else "orange" if score >= 40 else "gray"
+            popup_html = (
+                f"<b>{job.get('title','')}</b><br>"
+                f"{job.get('company','')}<br>"
+                f"{loc_str}<br>"
+                f"Match: {score}%"
+                + (f"<br>📞 {job.get('contact_phone','')}" if job.get("contact_phone") else "")
+                + (f"<br>✉ {job.get('contact_email','')}" if job.get("contact_email") else "")
+                + f'<br><a href="{job.get("url","#")}" target="_blank">Stelle öffnen →</a>'
+            )
+            folium.CircleMarker(
+                coords,
+                radius=7,
+                color=color,
+                fill=True,
+                fill_opacity=0.8,
+                tooltip=f"{job.get('company','')} · {score}%",
+                popup=folium.Popup(popup_html, max_width=250),
+            ).add_to(m)
+            plotted.add(loc_str)
+
+    st_folium(m, height=380, use_container_width=True)
+    st.caption("🔴 Mein Standort  🟢 ≥70%  🟠 ≥40%  ⚫ <40%")
+    st.markdown("---")
+
     # Source filter
     source_tags = ["Alle"] + sorted(sources.keys())
     selected_source = st.selectbox("Quelle filtern", source_tags, label_visibility="collapsed")
@@ -562,68 +625,66 @@ if jobs:
         dist_str = f" · {dist:.0f} km" if dist else ""
 
         with st.container():
+            # Kontaktdaten-HTML direkt in Karte
+            contact_html = ""
+            if contact_name or contact_email or contact_phone:
+                parts = []
+                if contact_name:
+                    parts.append(f'<span class="contact-pill">👤 {contact_name}</span>')
+                if contact_phone:
+                    parts.append(f'<a href="tel:{contact_phone.replace(" ","")}" class="contact-pill">📞 {contact_phone}</a>')
+                if contact_email:
+                    is_guessed = job.get("contact_email_guessed", False)
+                    guess_mark = " ?" if is_guessed else ""
+                    parts.append(f'<a href="mailto:{contact_email}" class="contact-pill">✉ {contact_email}{guess_mark}</a>')
+                contact_html = '<div style="margin-top:8px;">' + " ".join(parts) + '</div>'
+            else:
+                contact_html = '<div style="margin-top:8px;color:#52525B;font-size:11px;font-style:italic;">Keine Kontaktdaten gefunden</div>'
+
+            facility_warn = ""
+            if not job.get("facility_match", True) and job.get("detected_facility"):
+                facility_warn = f'<span style="color:#FCD34D;font-size:11px;margin-left:8px;">⚠ {job["detected_facility"]}</span>'
+
             st.markdown(f"""
             <div class="job-card">
-                <div style="display: flex; justify-content: space-between; align-items: start;">
+                <div style="display:flex;justify-content:space-between;align-items:start;">
                     <div>
                         <span class="source-tag">{source}</span>
                         <span class="match-badge {badge_class}">{score}%</span>
-                        {f'<span style="color: #71717A; font-size: 12px;">{dist_str}</span>' if dist_str else ''}
+                        {f'<span style="color:#71717A;font-size:12px;">{dist_str}</span>' if dist_str else ''}
+                        {facility_warn}
                     </div>
+                    <a href="{url}" target="_blank" style="color:#52525B;font-size:11px;text-decoration:none;">Stelle öffnen →</a>
                 </div>
-                <h3 style="color: #FAFAFA; margin: 8px 0 4px 0; font-size: 16px;">
-                    <a href="{url}" target="_blank" style="color: #99F6E4; text-decoration: none;">{title}</a>
+                <h3 style="color:#FAFAFA;margin:8px 0 2px 0;font-size:15px;">
+                    <a href="{url}" target="_blank" style="color:#99F6E4;text-decoration:none;">{title}</a>
                 </h3>
-                <p style="color: #D4D4D8; margin: 0; font-size: 14px;">
-                    🏢 {company} {f'· 📍 {location}' if location else ''}
-                </p>
+                <p style="color:#D4D4D8;margin:0;font-size:13px;">🏢 {company} {f'· 📍 {location}' if location else ''}</p>
+                {contact_html}
             </div>
             """, unsafe_allow_html=True)
 
-            # Expandable Details
-            with st.expander(f"Details & Kontakt — {company}", expanded=False):
-                det_cols = st.columns([2, 1])
-
-                with det_cols[0]:
-                    # Contact info
-                    if contact_name or contact_email or contact_phone:
-                        st.markdown("**Kontaktdaten:**")
-                        if contact_name:
-                            st.markdown(f"👤 {contact_name}")
-                        if contact_email:
-                            st.markdown(f"📧 `{contact_email}`")
-                        if contact_phone:
-                            st.markdown(f"📞 `{contact_phone}`")
-                    else:
-                        st.caption("Keine Kontaktdaten gefunden")
-
-                    # Zusatzinfos
-                    if job.get("employment_type"):
-                        st.markdown(f"📋 {job['employment_type']}")
-
-                with det_cols[1]:
-                    # Action Buttons
-                    st.link_button("🔗 Stelle öffnen", url, use_container_width=True)
-
-                    # Akquise Email
-                    if contact_email and st.session_state.candidate_info:
-                        betreff, body = build_email_template(
-                            job, st.session_state.candidate_info
-                        )
-                        gmail_url = (
-                            "https://mail.google.com/mail/?view=cm&fs=1"
-                            f"&to={urllib.parse.quote(contact_email)}"
-                            f"&su={urllib.parse.quote(betreff)}"
-                            f"&body={urllib.parse.quote(body)}"
-                        )
-                        st.link_button("📧 Akquise-Email", gmail_url, use_container_width=True)
-
-                    # Status (stabil per Job-URL, nicht Index)
-                    status_key = f"status_{hash(url)}"
-                    new_status = st.selectbox(
-                        "Status", ["—", "Kontaktiert", "Interesse", "Abgelehnt", "Vermittelt"],
-                        key=status_key, label_visibility="collapsed",
+            # Aktions-Zeile unter der Karte
+            act_cols = st.columns([1, 1, 1, 2])
+            with act_cols[0]:
+                st.link_button("🔗 Stelle", url, use_container_width=True)
+            with act_cols[1]:
+                if contact_email and st.session_state.candidate_info:
+                    betreff, body = build_email_template(job, st.session_state.candidate_info)
+                    gmail_url = (
+                        "https://mail.google.com/mail/?view=cm&fs=1"
+                        f"&to={urllib.parse.quote(contact_email)}"
+                        f"&su={urllib.parse.quote(betreff)}"
+                        f"&body={urllib.parse.quote(body)}"
                     )
+                    st.link_button("📧 Akquise", gmail_url, use_container_width=True)
+            with act_cols[2]:
+                status_key = f"status_{hash(url)}"
+                st.selectbox(
+                    "Status", ["—", "Kontaktiert", "Interesse", "Abgelehnt", "Vermittelt"],
+                    key=status_key, label_visibility="collapsed",
+                )
+            st.markdown('<div style="margin-bottom:4px;"></div>', unsafe_allow_html=True)
 
     # ── Anon-PDF Download ────────────────────────────────────────────────
     if st.session_state.candidate_info:
