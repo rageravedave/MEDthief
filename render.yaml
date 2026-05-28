@@ -3,8 +3,18 @@ services:
     name: medthief
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && python create_secrets.py
     startCommand: streamlit run web_app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: AUTH_COOKIE_SECRET
+        sync: false
+      - key: APP_URL
+        value: https://medthief-eihf.onrender.com
+      - key: ALLOWED_EMAILS
+        sync: false

@@ -100,8 +100,37 @@ st.markdown("""
     /* Hide Streamlit branding, keep sidebar toggle visible */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
+    .login-box {
+        max-width: 400px; margin: 80px auto; padding: 40px;
+        background: #17171A; border: 1px solid #27272A; border-radius: 16px;
+        text-align: center;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ── Google Auth Gate ──────────────────────────────────────────────────────────
+_ALLOWED = [e.strip() for e in os.environ.get("ALLOWED_EMAILS", "").split(",") if e.strip()]
+
+if not st.experimental_user.is_logged_in:
+    st.markdown('<div class="login-box">', unsafe_allow_html=True)
+    if os.path.exists("medthief-logo.png"):
+        st.image("medthief-logo.png", width=80)
+    st.markdown("## 🏥 MEDthief")
+    st.caption("MEDWING Recruiting Tool")
+    st.markdown("---")
+    st.markdown("Bitte mit deinem **MEDWING Google-Account** anmelden.")
+    if st.button("Mit Google anmelden", type="primary", use_container_width=True):
+        st.login("google")
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.stop()
+
+if _ALLOWED and st.experimental_user.email not in _ALLOWED:
+    st.error(f"Kein Zugang für **{st.experimental_user.email}**.")
+    st.info("Wende dich an David Böser um Zugang zu erhalten.")
+    if st.button("Abmelden"):
+        st.logout()
+    st.stop()
 
 
 # ── Session State Init ───────────────────────────────────────────────────────
@@ -119,6 +148,10 @@ if "job_status" not in st.session_state:
     st.session_state.job_status = {}
 if "search_done" not in st.session_state:
     st.session_state.search_done = False
+if "auto_search" not in st.session_state:
+    st.session_state.auto_search = False
+if "page" not in st.session_state:
+    st.session_state.page = 0
 
 
 # ── Helper: CV-Felder extrahieren ────────────────────────────────────────────
@@ -331,8 +364,12 @@ def build_anon_pdf(candidate: dict) -> str:
 #                              SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
+    if os.path.exists("medthief-logo.png"):
+        st.image("medthief-logo.png", width=60)
     st.markdown("## 🏥 MEDthief")
-    st.caption("MEDWING Recruiting Tool")
+    st.caption(f"MEDWING Recruiting Tool · {st.experimental_user.name or st.experimental_user.email}")
+    if st.button("Abmelden", use_container_width=False):
+        st.logout()
     st.divider()
 
     # ── PDF Upload ───────────────────────────────────────────────────────
@@ -350,6 +387,7 @@ with st.sidebar:
             try:
                 result = st.session_state.cv_parser.parse(tmp_path)
                 apply_cv(result)
+                st.session_state.auto_search = True
             except Exception as e:
                 st.error(f"Parse-Fehler: {e}")
         os.unlink(tmp_path)
@@ -449,11 +487,18 @@ with st.sidebar:
 if search_clicked and not job_title.strip():
     st.warning("Bitte Berufsbezeichnung auswählen.")
 
-if search_clicked and job_title.strip():
-    dept_str = ", ".join(fachabteilungen)
-    progress_bar = st.progress(0, text="Suche startet ...")
+_do_search = (search_clicked and job_title.strip()) or (st.session_state.auto_search and job_title.strip())
+if _do_search:
+    st.session_state.auto_search = False
 
-    with st.spinner("Stellen werden gesucht ..."):
+if _do_search:
+    dept_str = ", ".join(fachabteilungen)
+    st.session_state.page = 0
+
+    SOURCES = ["Pflegia", "Pflegejobs", "Medi-Karriere", "Kliniken.de", "Gesundheit.jobs"]
+    with st.status("🔍 Stellen werden gesucht ...", expanded=True) as status:
+        for src in SOURCES:
+            st.write(f"⏳ {src} ...")
         try:
             searcher = st.session_state.job_searcher
             jobs = searcher.search(
@@ -488,16 +533,24 @@ if search_clicked and job_title.strip():
                 ),
             )
 
+            # Ergebnis-Zusammenfassung pro Quelle
+            src_counts = {}
+            for j in jobs:
+                s = j.get("source", "?")
+                src_counts[s] = src_counts.get(s, 0) + 1
+            for src, cnt in sorted(src_counts.items(), key=lambda x: -x[1]):
+                st.write(f"✅ {src}: **{cnt}** Stellen")
+
             st.session_state.jobs = jobs
             st.session_state.search_done = True
-            progress_bar.progress(100, text=f"{len(jobs)} Stellen gefunden!")
+            status.update(label=f"✅ {len(jobs)} Stellen gefunden!", state="complete", expanded=False)
 
         except Exception as e:
-            st.error(f"Suchfehler: {e}")
+            status.update(label=f"❌ Fehler: {e}", state="error")
             import traceback
             traceback.print_exc()
 
-elif not st.session_state.search_done:
+elif not st.session_state.search_done and not st.session_state.auto_search:
     st.markdown("""
     <div style="text-align: center; padding: 80px 20px; color: #71717A;">
         <h1 style="font-size: 48px; margin-bottom: 8px;">🏥</h1>
@@ -558,10 +611,14 @@ if jobs:
         ).add_to(m)
 
     plotted = set()
+    _geo_limit = 0
     for job in jobs:
         loc_str = job.get("location", "")
         if not loc_str or loc_str in plotted:
             continue
+        if _geo_limit >= 20:
+            break
+        _geo_limit += 1
         coords = _geocode(loc_str)
         if coords:
             score = job.get("match_score", 0)
@@ -598,11 +655,16 @@ if jobs:
         j for j in jobs if j.get("source") == selected_source
     ]
 
-    st.markdown(f"**{len(filtered_jobs)} Ergebnisse** angezeigt")
+    JOBS_PER_PAGE = 20
+    total_pages = max(1, (len(filtered_jobs) + JOBS_PER_PAGE - 1) // JOBS_PER_PAGE)
+    page = min(st.session_state.page, total_pages - 1)
+    page_jobs = filtered_jobs[page * JOBS_PER_PAGE : (page + 1) * JOBS_PER_PAGE]
+
+    st.markdown(f"**{len(filtered_jobs)} Ergebnisse** · Seite {page + 1}/{total_pages}")
     st.markdown("---")
 
     # ── Job Cards ────────────────────────────────────────────────────────
-    for i, job in enumerate(filtered_jobs):
+    for i, job in enumerate(page_jobs):
         score = job.get("match_score", 0)
         if score >= 70:
             badge_class = "match-high"
@@ -684,6 +746,23 @@ if jobs:
                     key=status_key, label_visibility="collapsed",
                 )
             st.markdown('<div style="margin-bottom:4px;"></div>', unsafe_allow_html=True)
+
+    # ── Pagination Controls ───────────────────────────────────────────────
+    if total_pages > 1:
+        st.markdown("---")
+        p_cols = st.columns([1, 2, 1])
+        with p_cols[0]:
+            if page > 0:
+                if st.button("← Zurück", use_container_width=True):
+                    st.session_state.page = page - 1
+                    st.rerun()
+        with p_cols[1]:
+            st.markdown(f"<div style='text-align:center;color:#71717A;padding-top:8px;'>Seite {page+1} von {total_pages}</div>", unsafe_allow_html=True)
+        with p_cols[2]:
+            if page < total_pages - 1:
+                if st.button("Weiter →", use_container_width=True):
+                    st.session_state.page = page + 1
+                    st.rerun()
 
     # ── Anon-PDF Download ────────────────────────────────────────────────
     if st.session_state.candidate_info:
