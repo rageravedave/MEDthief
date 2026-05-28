@@ -97,10 +97,11 @@ st.markdown("""
     .stat-num { font-size: 24px; font-weight: 800; color: #2DD4BF; }
     .stat-label { font-size: 11px; color: #71717A; }
 
-    /* Hide Streamlit branding */
+    /* Hide Streamlit branding but keep sidebar toggle */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
+    [data-testid="collapsedControl"] {visibility: visible;}
 </style>
 """, unsafe_allow_html=True)
 
