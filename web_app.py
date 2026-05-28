@@ -100,37 +100,8 @@ st.markdown("""
     /* Hide Streamlit branding, keep sidebar toggle visible */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    .login-box {
-        max-width: 400px; margin: 80px auto; padding: 40px;
-        background: #17171A; border: 1px solid #27272A; border-radius: 16px;
-        text-align: center;
-    }
 </style>
 """, unsafe_allow_html=True)
-
-
-# ── Google Auth Gate ──────────────────────────────────────────────────────────
-_ALLOWED = [e.strip() for e in os.environ.get("ALLOWED_EMAILS", "").split(",") if e.strip()]
-
-if not st.experimental_user.is_logged_in:
-    st.markdown('<div class="login-box">', unsafe_allow_html=True)
-    if os.path.exists("medthief-logo.png"):
-        st.image("medthief-logo.png", width=80)
-    st.markdown("## 🏥 MEDthief")
-    st.caption("MEDWING Recruiting Tool")
-    st.markdown("---")
-    st.markdown("Bitte mit deinem **MEDWING Google-Account** anmelden.")
-    if st.button("Mit Google anmelden", type="primary", use_container_width=True):
-        st.login("google")
-    st.markdown('</div>', unsafe_allow_html=True)
-    st.stop()
-
-if _ALLOWED and st.experimental_user.email not in _ALLOWED:
-    st.error(f"Kein Zugang für **{st.experimental_user.email}**.")
-    st.info("Wende dich an David Böser um Zugang zu erhalten.")
-    if st.button("Abmelden"):
-        st.logout()
-    st.stop()
 
 
 # ── Session State Init ───────────────────────────────────────────────────────
@@ -367,9 +338,7 @@ with st.sidebar:
     if os.path.exists("medthief-logo.png"):
         st.image("medthief-logo.png", width=60)
     st.markdown("## 🏥 MEDthief")
-    st.caption(f"MEDWING Recruiting Tool · {st.experimental_user.name or st.experimental_user.email}")
-    if st.button("Abmelden", use_container_width=False):
-        st.logout()
+    st.caption("MEDWING Recruiting Tool")
     st.divider()
 
     # ── PDF Upload ───────────────────────────────────────────────────────
