@@ -5,8 +5,22 @@ Entwickelt für MEDWING GmbH
 
 import streamlit as st
 import os, re, tempfile, urllib.parse, time, traceback
-import folium
-from streamlit_folium import st_folium
+
+# ── Page Config — muss als ERSTES Streamlit-Kommando stehen ──────────────────
+st.set_page_config(
+    page_title="MEDthief — MEDWING Recruiting",
+    page_icon="🏥",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ── Abhängigkeiten laden ──────────────────────────────────────────────────────
+try:
+    import folium
+    from streamlit_folium import st_folium
+except Exception as e:
+    st.error(f"Folium-Import-Fehler: {e}")
+    st.stop()
 
 try:
     from cv_parser import CVParser, FACHABTEILUNGEN, MEDWING_ALL_TITLES
@@ -14,14 +28,6 @@ try:
 except Exception as e:
     st.error(f"Import-Fehler: {e}\n\n{traceback.format_exc()}")
     st.stop()
-
-# ── Page Config ──────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="MEDthief — MEDWING Recruiting",
-    page_icon="🏥",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 # ── Custom CSS ───────────────────────────────────────────────────────────────
 st.markdown("""
@@ -336,9 +342,7 @@ def build_anon_pdf(candidate: dict) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     if os.path.exists("medthief-logo.png"):
-        st.image("medthief-logo.png", width=60)
-    st.markdown("## 🏥 MEDthief")
-    st.caption("MEDWING Recruiting Tool")
+        st.image("medthief-logo.png", width=160)
     st.divider()
 
     # ── PDF Upload ───────────────────────────────────────────────────────
