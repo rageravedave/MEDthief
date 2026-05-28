@@ -460,9 +460,15 @@ with st.sidebar:
 if search_clicked and not job_title.strip():
     st.warning("Bitte Berufsbezeichnung auswählen.")
 
-_do_search = (search_clicked and job_title.strip()) or (st.session_state.auto_search and job_title.strip())
+# Für Auto-Search: job_title direkt aus CV nehmen falls Dropdown noch leer
+_cv_title = (st.session_state.cv_result or {}).get("job_title", "")
+_effective_title = job_title.strip() or _cv_title.strip()
+
+_do_search = (search_clicked and job_title.strip()) or (st.session_state.auto_search and _effective_title)
 if _do_search:
     st.session_state.auto_search = False
+    if not job_title.strip() and _cv_title:
+        job_title = _cv_title
 
 if _do_search:
     dept_str = ", ".join(fachabteilungen)

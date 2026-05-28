@@ -133,7 +133,7 @@ MEDWING_TITLE_MAP = {
 }
 
 # Vollständige Liste aller MEDWING-Titel (für Dropdown in der UI)
-MEDWING_ALL_TITLES = sorted(MEDWING_TITLE_MAP.keys())
+MEDWING_ALL_TITLES = sorted(set(MEDWING_TITLE_MAP.values()))
 
 # ── Fallback-Kette: wenn Suche mit spezifischem Titel leer, diesen nehmen ────
 TITLE_FALLBACK = {
